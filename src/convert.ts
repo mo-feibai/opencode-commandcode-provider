@@ -59,11 +59,23 @@ interface CCRequestEnvelope {
     temperature?: number
     top_p?: number
     top_k?: number
+    reasoning_effort?: string
   }
 }
 
 function hasType(p: unknown, type: string): boolean {
   return typeof p === "object" && p !== null && (p as { type?: string }).type === type
+}
+
+// opencode forwards model `variants` / `options` as providerOptions.<provider>.
+// Map the selected reasoning effort onto the Command Code API's `reasoning_effort`.
+function extractReasoningEffort(
+  providerOptions: LanguageModelV3CallOptions["providerOptions"],
+): string | undefined {
+  const ccOptions = providerOptions?.commandcode
+  if (!ccOptions || typeof ccOptions !== "object") return undefined
+  const value = (ccOptions as Record<string, unknown>).reasoningEffort
+  return typeof value === "string" && value.length > 0 ? value : undefined
 }
 
 function isTextPart(p: unknown): p is LanguageModelV3TextPart {
@@ -199,6 +211,9 @@ export function buildRequest(
   if (options.temperature !== undefined) params.temperature = options.temperature
   if (options.topP !== undefined) params.top_p = options.topP
   if (options.topK !== undefined) params.top_k = options.topK
+
+  const reasoningEffort = extractReasoningEffort(options.providerOptions)
+  if (reasoningEffort) params.reasoning_effort = reasoningEffort
 
   return {
     config: {

@@ -9,6 +9,7 @@ interface ModelEntry {
   name: string
   tier: "premium" | "open-source"
   reasoning: boolean
+  reasoning_efforts?: string[]
   tool_call: boolean
   cost: { input: number; output: number; cache_read?: number; cache_write?: number }
   limit: { context: number; output: number }
@@ -48,7 +49,7 @@ export default async function commandcodePlugin() {
           if (entry.cost.cache_read !== undefined) costObj.cache_read = entry.cost.cache_read
           if (entry.cost.cache_write !== undefined) costObj.cache_write = entry.cost.cache_write
 
-          modelsObj[key] = {
+          const model: Record<string, unknown> = {
             id: entry.id,
             name: entry.name,
             reasoning: entry.reasoning,
@@ -56,6 +57,16 @@ export default async function commandcodePlugin() {
             cost: costObj,
             limit: entry.limit,
           }
+          // Expose each supported effort as an opencode variant so the model's
+          // thinking strength can be selected (mapped to the API by the provider).
+          if (entry.reasoning_efforts?.length) {
+            const variants: Record<string, unknown> = {}
+            for (const effort of entry.reasoning_efforts) {
+              variants[effort] = { reasoningEffort: effort }
+            }
+            model.variants = variants
+          }
+          modelsObj[key] = model
         }
         cc.models = modelsObj
       }

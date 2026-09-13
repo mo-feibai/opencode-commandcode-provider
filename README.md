@@ -137,6 +137,15 @@ COMMANDCODE_API_KEY=your-key opencode
 
 Full model list is maintained in [`models.json`](./models.json). Run `bun run sync` to refresh from the latest Command Code CLI release on npm.
 
+### Adjusting thinking strength
+
+Models that advertise reasoning efforts are registered with opencode **variants** — one per supported level (`low`/`medium`/`high`/`xhigh`/`max`). Select one with:
+
+- CLI: `opencode run -m commandcode/<model> --variant high "..."`
+- TUI: cycle with the `variant_cycle` keybind
+
+The chosen level is forwarded to the Command Code API as `params.reasoning_effort`. Models that don't advertise efforts (they decide their own reasoning depth) have no variants.
+
 ## Development
 
 ```bash

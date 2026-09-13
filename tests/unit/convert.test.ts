@@ -225,3 +225,21 @@ test("envelope has correct top-level shape", () => {
   expect(req).toHaveProperty("permissionMode", "standard")
   expect(req).toHaveProperty("params")
 })
+
+test("forwards reasoningEffort from providerOptions as reasoning_effort", () => {
+  const req = buildRequest("m", makeOpts({
+    providerOptions: { commandcode: { reasoningEffort: "high" } },
+  }))
+  expect(req.params.reasoning_effort).toBe("high")
+})
+
+test("omits reasoning_effort when no commandcode effort is set", () => {
+  expect(buildRequest("m", makeOpts()).params.reasoning_effort).toBeUndefined()
+  expect(buildRequest("m", makeOpts({ providerOptions: {} })).params.reasoning_effort).toBeUndefined()
+  expect(buildRequest("m", makeOpts({ providerOptions: { other: { reasoningEffort: "high" } } })).params.reasoning_effort).toBeUndefined()
+})
+
+test("ignores non-string or empty reasoningEffort values", () => {
+  expect(buildRequest("m", makeOpts({ providerOptions: { commandcode: { reasoningEffort: 3 } } })).params.reasoning_effort).toBeUndefined()
+  expect(buildRequest("m", makeOpts({ providerOptions: { commandcode: { reasoningEffort: "" } } })).params.reasoning_effort).toBeUndefined()
+})

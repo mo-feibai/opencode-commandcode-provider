@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import {
   buildModelEntries,
   extractCatalogAndCosts,
+  generateOpencodeModels,
   outputLimitFor,
   parseModelsMd,
   toConfigKey,
@@ -90,4 +91,26 @@ test("toConfigKey strips author prefix and lowercases", () => {
   expect(toConfigKey("deepseek/deepseek-v4-flash")).toBe("deepseek-v4-flash")
   expect(toConfigKey("claude-opus-5")).toBe("claude-opus-5")
   expect(toConfigKey("MiniMaxAI/MiniMax-M3-Free")).toBe("minimax-m3-free")
+})
+
+test("carries reasoning efforts and emits opencode variants", () => {
+  const catalog: CatalogEntry[] = [
+    { id: "deepseek/deepseek-v4-flash", name: "DeepSeek V4 Flash", provider: "vercel-ai-gateway", reasoningEfforts: ["high", "max"], contextWindow: 1_000_000 },
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic", reasoning: true, contextWindow: 1_000_000 },
+  ]
+  const entries = buildModelEntries(catalog, new Map<string, CostEntry>(), new Map())
+
+  const deepseek = entries.find((e) => e.id === "deepseek/deepseek-v4-flash")
+  expect(deepseek?.reasoning_efforts).toEqual(["high", "max"])
+  const claude = entries.find((e) => e.id === "claude-sonnet-4-6")
+  expect(claude?.reasoning_efforts).toBeUndefined()
+
+  const models = generateOpencodeModels(entries)
+  const deepseekModel = models["deepseek-v4-flash"] as Record<string, unknown>
+  expect(deepseekModel.variants).toEqual({
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+  })
+  const claudeModel = models["claude-sonnet-4-6"] as Record<string, unknown>
+  expect(claudeModel.variants).toBeUndefined()
 })

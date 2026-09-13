@@ -15,6 +15,8 @@ export interface ModelEntry {
   name: string
   tier: "premium" | "open-source"
   reasoning: boolean
+  /** Reasoning efforts the model supports (e.g. ["low","medium","high"]). */
+  reasoning_efforts?: string[]
   tool_call: boolean
   cost: { input: number; output: number; cache_read?: number; cache_write?: number }
   limit: { context: number; output: number }
@@ -283,6 +285,7 @@ export function buildModelEntries(
       name: model.name,
       tier: tierFor(model.id),
       reasoning,
+      ...(model.reasoningEfforts?.length ? { reasoning_efforts: model.reasoningEfforts } : {}),
       tool_call: true,
       cost,
       limit: { context, output: outputLimitFor(model.id) },
@@ -313,6 +316,14 @@ export function generateOpencodeModels(entries: ModelEntry[]): Record<string, un
       tool_call: entry.tool_call,
       cost: costObj,
       limit: entry.limit,
+    }
+
+    if (entry.reasoning_efforts?.length) {
+      const variants: Record<string, unknown> = {}
+      for (const effort of entry.reasoning_efforts) {
+        variants[effort] = { reasoningEffort: effort }
+      }
+      ;(models[key] as Record<string, unknown>).variants = variants
     }
   }
   return models

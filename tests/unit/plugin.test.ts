@@ -106,6 +106,21 @@ test("config hook registers provider with npm and models", async () => {
   expect(Object.keys(models).length).toBeGreaterThan(0)
 })
 
+test("config hook exposes reasoning variants for models with efforts", async () => {
+  const plugin = await pluginFn()
+  const config: Record<string, unknown> = { provider: { commandcode: {} } }
+  await plugin.config(config)
+
+  const cc = (config.provider as Record<string, Record<string, unknown>>).commandcode
+  const models = cc.models as Record<string, Record<string, unknown>>
+  const deepseek = models["deepseek-v4-flash"]
+  expect(deepseek).toBeDefined()
+  expect(deepseek.variants).toEqual({
+    high: { reasoningEffort: "high" },
+    max: { reasoningEffort: "max" },
+  })
+})
+
 test("config hook does not overwrite existing npm field", async () => {
   const plugin = await pluginFn()
   const config: Record<string, unknown> = {
