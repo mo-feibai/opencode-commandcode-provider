@@ -1,0 +1,53 @@
+name: Sync models
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Refresh model catalog
+        run: bun run sync
+
+      - name: Regenerate README model table
+        run: bun run generate-readme
+
+      - name: Typecheck and test
+        run: |
+          bun run typecheck
+          bun test
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet; then
+            echo "No changes to sync."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b chore/sync-models
+          git add -A
+          git commit -m "chore: sync Command Code models and CLI version"
+          git push -f origin chore/sync-models
+          gh pr create \
+            --title "chore: sync Command Code models and CLI version" \
+            --body "Automated refresh of \`models.json\` and \`src/version.ts\` from the latest \`command-code\` release." \
+            --base main --head chore/sync-models || true

@@ -5,11 +5,12 @@ import { execSync } from "child_process"
 
 const PROJECT_ROOT = join(import.meta.dir, "..")
 const MODELS_JSON = join(PROJECT_ROOT, "models.json")
+const VERSION_TS = join(PROJECT_ROOT, "src", "version.ts")
 const GLOBAL_CONFIG = join(homedir(), ".config", "opencode", "opencode.jsonc")
 const NPM_PACKAGE = "command-code"
 const TMP_DIR = join("/tmp", "cc-model-sync")
 
-interface ModelEntry {
+export interface ModelEntry {
   id: string
   name: string
   tier: "premium" | "open-source"
@@ -19,7 +20,7 @@ interface ModelEntry {
   limit: { context: number; output: number }
 }
 
-interface CostEntry {
+export interface CostEntry {
   id: string
   provider: string
   category: string
@@ -30,284 +31,274 @@ interface CostEntry {
   cacheHitCost: number
 }
 
-interface SnEntry {
+export interface CatalogEntry {
   id: string
-  provider: string
-  spec: string
-  label: string
   name: string
-  description: string
+  provider: string
+  spec?: string
   reasoning?: boolean
   reasoningEfforts?: string[]
   contextWindow?: number
 }
 
+export interface MdEntry {
+  id: string
+  name: string
+  context?: number
+  reasoning: boolean
+  cost?: { input: number; output: number; cache_read?: number; cache_write?: number }
+}
+
+function tierFor(id: string): "premium" | "open-source" {
+  if (id.startsWith("claude-") || id.startsWith("gpt-")) return "premium"
+  return "open-source"
+}
+
 const FALLBACK_COSTS: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }> = {
-  "deepseek/deepseek-v4-pro": { input: 0.435, output: 0.87, cache_read: 0.003625 },
-  "deepseek/deepseek-v4-flash": { input: 0.14, output: 0.28, cache_read: 0.01 },
-  "zai-org/GLM-5.1": { input: 1.4, output: 4.4, cache_read: 0.26 },
-  "MiniMaxAI/MiniMax-M2.7": { input: 0.3, output: 1.2, cache_read: 0.06 },
-  "Qwen/Qwen3.6-Max-Preview": { input: 1.3, output: 7.8, cache_read: 0.26, cache_write: 1.63 },
-  "Qwen/Qwen3.6-Plus": { input: 0.5, output: 3, cache_read: 0.1 },
-  "Qwen/Qwen3.7-Max": { input: 1.25, output: 3.75, cache_read: 0.25, cache_write: 1.56 },
-  "stepfun/Step-3.5-Flash": { input: 0.1, output: 0.3, cache_read: 0.02 },
-  "google/gemini-3.5-flash": { input: 1.5, output: 9, cache_read: 0.15 },
-  "google/gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cache_read: 0.03 },
+  "deepseek/deepseek-v4-pro": { input: 0.66, output: 1.98, cache_read: 0.022 },
+  "deepseek/deepseek-v4-flash": { input: 0.15, output: 0.6, cache_read: 0.003 },
 }
 
-const FALLBACK_LIMITS: Record<string, { context: number; output: number }> = {
-  "claude-haiku-4-5-20251001": { context: 200000, output: 8192 },
-  "claude-opus-4-6": { context: 200000, output: 32000 },
-  "claude-opus-4-7": { context: 200000, output: 32000 },
-  "claude-sonnet-4-6": { context: 200000, output: 16000 },
-  "gpt-5.5": { context: 256000, output: 128000 },
-  "gpt-5.4": { context: 256000, output: 128000 },
-  "gpt-5.3-codex": { context: 256000, output: 128000 },
-  "gpt-5.4-mini": { context: 256000, output: 128000 },
-  "moonshotai/Kimi-K2.6": { context: 262144, output: 131072 },
-  "moonshotai/Kimi-K2.5": { context: 262144, output: 131072 },
-  "zai-org/GLM-5": { context: 200000, output: 131072 },
-  "zai-org/GLM-5.1": { context: 200000, output: 131072 },
-  "MiniMaxAI/MiniMax-M2.5": { context: 1000000, output: 131072 },
-  "MiniMaxAI/MiniMax-M2.7": { context: 1000000, output: 131072 },
-  "deepseek/deepseek-v4-pro": { context: 1000000, output: 384000 },
-  "deepseek/deepseek-v4-flash": { context: 1000000, output: 384000 },
-  "Qwen/Qwen3.6-Max-Preview": { context: 1000000, output: 131072 },
-  "Qwen/Qwen3.6-Plus": { context: 1000000, output: 131072 },
-  "Qwen/Qwen3.7-Max": { context: 1000000, output: 131072 },
-  "stepfun/Step-3.5-Flash": { context: 1000000, output: 131072 },
-  "google/gemini-3.5-flash": { context: 1000000, output: 65536 },
-  "google/gemini-3.1-flash-lite": { context: 1000000, output: 65536 },
+const DEFAULT_OUTPUT_LIMIT = 65536
+
+export function outputLimitFor(id: string): number {
+  if (id.startsWith("deepseek/")) return 384000
+  if (id.startsWith("claude-")) return 32000
+  if (id.startsWith("gpt-")) return 128000
+  if (id.startsWith("google/")) return 65536
+  return 131072
 }
 
-const HARDCODED_EXTRAS: SnEntry[] = [
-  {
-    id: "Qwen/Qwen3.7-Max",
-    provider: "vercel-ai-gateway",
-    spec: "chatComplete",
-    label: "Qwen 3.7 Max",
-    name: "Qwen 3.7 Max",
-    description: "latest Qwen Max model",
-    reasoning: true,
-  },
-]
+// --- Markdown catalog (dist/bundled/.../reference/models.md) -----------------
 
-const TIER_MAP: Record<string, "premium" | "open-source"> = {
-  "anthropic": "premium",
-  "openai": "premium",
-  "baseten": "open-source",
-  "vercel-ai-gateway": "open-source",
-  "openrouter": "open-source",
-  "cloudflare-ai-gateway": "open-source",
+function parseContextValue(raw: string): number | undefined {
+  const m = raw.match(/([\d.]+)\s*([MK])?/i)
+  if (!m || raw.trim() === "—" || raw.trim() === "-") return undefined
+  const value = Number(m[1])
+  if (!Number.isFinite(value)) return undefined
+  const unit = (m[2] ?? "").toUpperCase()
+  if (unit === "M") return Math.round(value * 1_000_000)
+  if (unit === "K") return Math.round(value * 1_000)
+  return Math.round(value)
 }
 
-async function fetchLatestBundle(): Promise<{ source: string; version: string }> {
-  console.log(`Fetching latest ${NPM_PACKAGE} metadata...`)
-  const metaResp = await fetch(`https://registry.npmjs.org/${NPM_PACKAGE}/latest`)
-  if (!metaResp.ok) throw new Error(`npm registry returned ${metaResp.status}`)
-  const meta = await metaResp.json()
-  const version = meta.version as string
-  const tarball = meta.dist.tarball as string
-  console.log(`  Latest version: ${version}`)
-  console.log(`  Tarball: ${tarball}`)
-
-  mkdirSync(TMP_DIR, { recursive: true })
-  const tgzPath = join(TMP_DIR, `${NPM_PACKAGE}.tgz`)
-
-  console.log("Downloading tarball...")
-  const tarballResp = await fetch(tarball)
-  if (!tarballResp.ok) throw new Error(`tarball download returned ${tarballResp.status}`)
-  const buffer = Buffer.from(await tarballResp.arrayBuffer())
-  writeFileSync(tgzPath, buffer)
-
-  console.log("Extracting...")
-  execSync(`tar -xzf "${tgzPath}" -C "${TMP_DIR}"`, { stdio: "pipe" })
-
-  const bundlePath = join(TMP_DIR, "package", "dist", "index.mjs")
-  if (!existsSync(bundlePath)) throw new Error(`Bundle not found at ${bundlePath}`)
-
-  const source = readFileSync(bundlePath, "utf-8")
-
-  rmSync(TMP_DIR, { recursive: true, force: true })
-
-  return { source, version }
-}
-
-function findBalancedObject(source: string, anchor: string): string {
-  const anchorIdx = source.indexOf(anchor)
-  if (anchorIdx < 0) throw new Error(`Anchor not found: ${anchor}`)
-
-  let parenIdx = anchorIdx - 1
-  while (parenIdx >= 0 && source[parenIdx] !== "(") parenIdx--
-  if (parenIdx < 0) throw new Error(`Could not find opening ( before anchor: ${anchor}`)
-
-  const braceStart = source.indexOf("{", parenIdx)
-  if (braceStart < 0) throw new Error(`Could not find { after opening (`)
-
-  let depth = 0
-  let end = braceStart
-  for (; end < source.length; end++) {
-    if (source[end] === "{") depth++
-    else if (source[end] === "}") {
-      depth--
-      if (depth === 0) break
-    }
+function parseCostValue(raw: string): MdEntry["cost"] {
+  const price = raw.match(/\$([\d.]+)\s*\/\s*\$([\d.]+)/)
+  if (!price) return undefined
+  const cost: { input: number; output: number; cache_read?: number; cache_write?: number } = {
+    input: Number(price[1]),
+    output: Number(price[2]),
   }
-
-  return source.slice(braceStart, end + 1)
+  const cache = raw.match(/cache\s*\$([\d.]+)/)
+  if (cache) cost.cache_read = Number(cache[1])
+  const write = raw.match(/write\s*\$([\d.]+)/)
+  if (write) cost.cache_write = Number(write[1])
+  return cost
 }
 
-function evaluateWithContext(code: string, context: Record<string, unknown>): any {
-  const keys = Object.keys(context)
-  const values = keys.map((k) => context[k])
-  const fn = Function(...keys, `"use strict"; return (${code})`)
-  return fn(...values)
-}
-
-function extractWt(source: string): Record<string, string> {
-  const raw = findBalancedObject(source, 'ANTHROPIC:"anthropic"')
-  return evaluateWithContext(normalizeForEval(raw), {})
-}
-
-function extractSpecConstants(source: string): { chatComplete: string; responses: string; qt: string } {
-  const anchorIdx = source.indexOf('SONNET_4_6:{id:"claude-sonnet-4-6"')
-  if (anchorIdx < 0) throw new Error("Could not find model catalog anchor")
-
-  const before = source.slice(Math.max(0, anchorIdx - 5000), anchorIdx)
-
-  const chatMatch = before.match(/([A-Za-z_$]+)="chatComplete"/)
-  const respMatch = before.match(/([A-Za-z_$]+)="responses"/)
-  if (!chatMatch || !respMatch) throw new Error("Could not find spec constants")
-
-  const qtMatch = before.match(/([A-Za-z_$]+)=Vt\[0\]/)
-  const qtVar = qtMatch ? qtMatch[1] : null
-
-  return {
-    chatComplete: chatMatch[1],
-    responses: respMatch[1],
-    qt: qtVar || "",
-  }
-}
-
-function extractModelCatalog(
-  source: string,
-  wt: Record<string, string>,
-  wtName: string,
-  spec: ReturnType<typeof extractSpecConstants>,
-): Record<string, SnEntry> {
-  const raw = findBalancedObject(source, 'SONNET_4_6:{id:"claude-sonnet-4-6"')
-  const ctx: Record<string, unknown> = { [wtName]: wt }
-  ctx[spec.chatComplete] = "chatComplete"
-  ctx[spec.responses] = "responses"
-  if (spec.qt) ctx[spec.qt] = wt.VERCEL_AI_GATEWAY
-  return evaluateWithContext(normalizeForEval(raw), ctx)
-}
-
-function extractCostData(source: string, wt: Record<string, string>, wtName: string): Record<string, CostEntry[]> {
-  const anchor = '{id:"anthropic:claude-sonnet-4-'
-  const anchorIdx = source.indexOf(anchor)
-  if (anchorIdx < 0) throw new Error("Could not find cost data anchor")
-
-  let braceDepth = 0
-  let start = anchorIdx - 1
-  for (; start >= 0; start--) {
-    if (source[start] === "}") braceDepth++
-    else if (source[start] === "{") {
-      if (braceDepth === 0) break
-      braceDepth--
-    }
-  }
-
-  let depth = 0
-  let end = start
-  for (; end < source.length; end++) {
-    if (source[end] === "{") depth++
-    else if (source[end] === "}") {
-      depth--
-      if (depth === 0) break
-    }
-  }
-
-  const raw = source.slice(start, end + 1)
-  return evaluateWithContext(normalizeForEval(raw), { [wtName]: wt }) as Record<string, CostEntry[]>
-}
-
-function getWtVarName(source: string): string {
-  const idx = source.indexOf('ANTHROPIC:"anthropic"')
-  if (idx < 0) throw new Error("Could not find Wt enum")
-  const before = source.slice(Math.max(0, idx - 50), idx)
-  const match = before.match(/\(([A-Za-z_$]+)=\{$/)
-  if (match) return match[1]
-  const match2 = before.match(/([A-Za-z_$]+)=\{$/)
-  if (match2) return match2[1]
-  throw new Error("Could not determine Wt variable name")
-}
-
-function normalizeForEval(code: string): string {
-  return code
-    .replace(/!0/g, "true")
-    .replace(/!1/g, "false")
-    .replace(/(\d+)e(\d+)/g, (_: string, m: string, e: string) =>
-      String(Number(m) * Math.pow(10, Number(e)))
-    )
-}
-
-function buildCostMap(costs: Record<string, CostEntry[]>): Map<string, CostEntry> {
-  const map = new Map<string, CostEntry>()
-  for (const arr of Object.values(costs)) {
-    for (const entry of arr) {
-      const colonIdx = entry.id.indexOf(":")
-      const bareId = colonIdx >= 0 ? entry.id.slice(colonIdx + 1) : entry.id
-      map.set(bareId, entry)
-    }
+export function parseModelsMd(md: string): Map<string, MdEntry> {
+  const map = new Map<string, MdEntry>()
+  for (const line of md.split("\n")) {
+    const cells = line.split("|").map((c) => c.trim())
+    if (cells.length < 8) continue
+    const idMatch = cells[1]?.match(/^`([^`]+)`$/)
+    if (!idMatch) continue
+    const id = idMatch[1] ?? ""
+    const name = cells[2] ?? id
+    const context = parseContextValue(cells[3] ?? "")
+    const efforts = cells[4] ?? ""
+    const cost = parseCostValue(cells[5] ?? "")
+    map.set(id, { id, name, context, reasoning: efforts !== "" && efforts !== "—", cost })
   }
   return map
 }
 
-function buildModelEntry(
-  entry: SnEntry,
-  costMap: Map<string, CostEntry>,
-): ModelEntry | null {
-  const provider = entry.provider || "unknown"
-  const tier = TIER_MAP[provider] ?? "open-source"
+// --- Minified bundle extraction ---------------------------------------------
 
-  const costEntry = costMap.get(entry.id)
-  let cost: { input: number; output: number; cache_read?: number; cache_write?: number }
-  if (costEntry) {
-    cost = {
-      input: costEntry.promptCost,
-      output: costEntry.completionCost,
+function matchBrace(source: string, braceStart: number): number {
+  let depth = 0
+  for (let i = braceStart; i < source.length; i++) {
+    const c = source[i]
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c
+      i++
+      while (i < source.length) {
+        if (source[i] === "\\") { i += 2; continue }
+        if (source[i] === quote) break
+        i++
+      }
+      continue
     }
-    if (costEntry.cacheHitCost > 0) cost.cache_read = costEntry.cacheHitCost
-    if (costEntry.cacheWrite5mCost > 0) cost.cache_write = costEntry.cacheWrite5mCost
-  } else {
-    const fallback = FALLBACK_COSTS[entry.id]
-    if (!fallback) return null
-    cost = fallback
+    if (c === "{") depth++
+    else if (c === "}") {
+      depth--
+      if (depth === 0) return i
+    }
   }
-
-  const limit = entry.contextWindow
-    ? { context: entry.contextWindow, output: FALLBACK_LIMITS[entry.id]?.output ?? 65536 }
-    : FALLBACK_LIMITS[entry.id] ?? { context: 200000, output: 65536 }
-
-  return {
-    id: entry.id,
-    name: entry.name,
-    tier,
-    reasoning: entry.reasoning || (entry.reasoningEfforts?.length ?? 0) > 0,
-    tool_call: true,
-    cost,
-    limit,
-  }
+  throw new Error("Unbalanced braces while scanning bundle")
 }
 
-function toConfigKey(id: string): string {
+function enclosingObjectStart(source: string, fromIdx: number): number {
+  let depth = 0
+  for (let i = fromIdx; i >= 0; i--) {
+    const c = source[i]
+    if (c === "}") depth++
+    else if (c === "{") {
+      if (depth === 0) return i
+      depth--
+    }
+  }
+  throw new Error("Could not find enclosing object")
+}
+
+function findAssignedObjectFromIndex(source: string, idx: number): { name: string; start: number; end: number } {
+  let inside = idx
+  for (let guard = 0; guard < 50; guard++) {
+    const braceStart = enclosingObjectStart(source, inside)
+    const before = source.slice(Math.max(0, braceStart - 100), braceStart)
+    const m = before.match(/([A-Za-z_$][\w$]*)\s*=\s*$/)
+    if (m && m[1]) return { name: m[1], start: braceStart, end: matchBrace(source, braceStart) }
+    inside = braceStart - 1
+  }
+  throw new Error("Could not find assigned object")
+}
+
+function findRichestAssignedObject(source: string, marker: string): { name: string; start: number; end: number } {
+  const counts = new Map<number, number>()
+  let i = -1
+  while ((i = source.indexOf(marker, i + 1)) !== -1) {
+    try {
+      const obj = findAssignedObjectFromIndex(source, i)
+      counts.set(obj.start, (counts.get(obj.start) ?? 0) + 1)
+    } catch {
+      // marker not inside an assigned object; skip
+    }
+  }
+  let bestStart = -1
+  let bestCount = 0
+  for (const [start, count] of counts) {
+    if (count > bestCount) { bestStart = start; bestCount = count }
+  }
+  if (bestStart < 0) throw new Error(`Could not locate object for marker ${marker}`)
+  const before = source.slice(Math.max(0, bestStart - 100), bestStart)
+  const nameMatch = before.match(/([A-Za-z_$][\w$]*)\s*=\s*$/)
+  if (!nameMatch || !nameMatch[1]) throw new Error(`Could not determine variable name for marker ${marker}`)
+  return { name: nameMatch[1], start: bestStart, end: matchBrace(source, bestStart) }
+}
+
+function splitTopLevel(source: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  let inStr: string | null = null
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]
+    if (inStr) {
+      if (c === "\\") { i++ }
+      else if (c === inStr) inStr = null
+      continue
+    }
+    if (c === '"' || c === "'" || c === "`") { inStr = c; continue }
+    if (c === "{" || c === "(" || c === "[") depth++
+    else if (c === "}" || c === ")" || c === "]") depth--
+    else if (c === ";" && depth === 0) { parts.push(source.slice(start, i)); start = i + 1 }
+  }
+  parts.push(source.slice(start))
+  return parts
+}
+
+function statementStartBefore(source: string, idx: number): number {
+  const varIdx = source.lastIndexOf("var ", idx)
+  const semiIdx = source.lastIndexOf(";", idx)
+  return varIdx > semiIdx ? varIdx : semiIdx + 1
+}
+
+export function extractCatalogAndCosts(source: string): {
+  catalog: CatalogEntry[]
+  costs: Map<string, CostEntry>
+} {
+  const catalogObj = findRichestAssignedObject(source, "contextWindow:")
+  const costObj = findRichestAssignedObject(source, "promptCost:")
+
+  const regionStart = Math.min(catalogObj.start, costObj.start)
+  const stmtStart = statementStartBefore(source, regionStart)
+  const region = source.slice(stmtStart, catalogObj.end + 1)
+
+  const decls = splitTopLevel(region).filter((p) => /^\s*var\s/.test(p)).join(";")
+  const fn = new Function(decls + `;return { catalog: ${catalogObj.name}, costs: ${costObj.name} }`) as () => {
+    catalog: Record<string, CatalogEntry>
+    costs: Record<string, CostEntry[]>
+  }
+  const { catalog, costs } = fn()
+
+  const costMap = new Map<string, CostEntry>()
+  for (const arr of Object.values(costs)) {
+    for (const entry of arr) {
+      const colonIdx = entry.id.indexOf(":")
+      const bareId = colonIdx >= 0 ? entry.id.slice(colonIdx + 1) : entry.id
+      costMap.set(bareId, entry)
+    }
+  }
+
+  return { catalog: Object.values(catalog), costs: costMap }
+}
+
+// --- Entry construction -----------------------------------------------------
+
+export function toConfigKey(id: string): string {
   const slashIdx = id.indexOf("/")
   const short = slashIdx >= 0 ? id.slice(slashIdx + 1) : id
   return short.toLowerCase()
 }
 
-function generateOpencodeModels(entries: ModelEntry[]): Record<string, unknown> {
+export function buildModelEntries(
+  catalog: CatalogEntry[],
+  costMap: Map<string, CostEntry>,
+  md: Map<string, MdEntry>,
+): ModelEntry[] {
+  const entries: ModelEntry[] = []
+  for (const model of catalog) {
+    const mdEntry = md.get(model.id)
+
+    const bundleCost = costMap.get(model.id)
+    let cost: ModelEntry["cost"]
+    if (mdEntry?.cost) {
+      cost = mdEntry.cost
+    } else if (bundleCost) {
+      cost = { input: bundleCost.promptCost, output: bundleCost.completionCost }
+      if (bundleCost.cacheHitCost > 0) cost.cache_read = bundleCost.cacheHitCost
+      if (bundleCost.cacheWrite5mCost > 0) cost.cache_write = bundleCost.cacheWrite5mCost
+    } else {
+      cost = FALLBACK_COSTS[model.id] ?? { input: 0, output: 0 }
+    }
+
+    const context = model.contextWindow ?? mdEntry?.context ?? 200000
+    const reasoning =
+      Boolean(model.reasoning) ||
+      (model.reasoningEfforts?.length ?? 0) > 0 ||
+      Boolean(mdEntry?.reasoning)
+
+    entries.push({
+      id: model.id,
+      name: model.name,
+      tier: tierFor(model.id),
+      reasoning,
+      tool_call: true,
+      cost,
+      limit: { context, output: outputLimitFor(model.id) },
+    })
+  }
+
+  const seen = new Set<string>()
+  return entries.filter((entry) => {
+    const key = toConfigKey(entry.id)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function generateOpencodeModels(entries: ModelEntry[]): Record<string, unknown> {
   const models: Record<string, unknown> = {}
   for (const entry of entries) {
     const key = toConfigKey(entry.id)
@@ -326,6 +317,60 @@ function generateOpencodeModels(entries: ModelEntry[]): Record<string, unknown> 
   }
   return models
 }
+
+// --- Fetching ---------------------------------------------------------------
+
+interface BundleData {
+  source: string
+  modelsMd: string | null
+  version: string
+}
+
+async function fetchLatestBundle(): Promise<BundleData> {
+  console.log(`Fetching latest ${NPM_PACKAGE} metadata...`)
+  const metaResp = await fetch(`https://registry.npmjs.org/${NPM_PACKAGE}/latest`)
+  if (!metaResp.ok) throw new Error(`npm registry returned ${metaResp.status}`)
+  const meta = (await metaResp.json()) as { version: string; dist: { tarball: string } }
+  const version = meta.version
+  const tarball = meta.dist.tarball
+  console.log(`  Latest version: ${version}`)
+
+  rmSync(TMP_DIR, { recursive: true, force: true })
+  mkdirSync(TMP_DIR, { recursive: true })
+  const tgzPath = join(TMP_DIR, `${NPM_PACKAGE}.tgz`)
+
+  console.log("Downloading tarball...")
+  const tarballResp = await fetch(tarball)
+  if (!tarballResp.ok) throw new Error(`tarball download returned ${tarballResp.status}`)
+  writeFileSync(tgzPath, Buffer.from(await tarballResp.arrayBuffer()))
+
+  console.log("Extracting...")
+  execSync(`tar -xzf "${tgzPath}" -C "${TMP_DIR}"`, { stdio: "pipe" })
+
+  const candidates = ["dist/cli.mjs", "dist/index.mjs"]
+  let source: string | null = null
+  for (const candidate of candidates) {
+    const p = join(TMP_DIR, "package", candidate)
+    if (existsSync(p)) {
+      const content = readFileSync(p, "utf-8")
+      if (content.includes("contextWindow:") && content.includes("promptCost:")) {
+        source = content
+        break
+      }
+    }
+  }
+  if (!source) throw new Error("Could not locate model catalog in CLI bundle")
+
+  const mdPath = join(TMP_DIR, "package", "dist", "bundled", "command-code-knowledge", "reference", "models.md")
+  const modelsMd = existsSync(mdPath) ? readFileSync(mdPath, "utf-8") : null
+  if (!modelsMd) console.warn("  models.md not found; costs fall back to bundle data only")
+
+  rmSync(TMP_DIR, { recursive: true, force: true })
+
+  return { source, modelsMd, version }
+}
+
+// --- Global config ----------------------------------------------------------
 
 function stripJsonc(input: string): string {
   let out = ""
@@ -361,105 +406,83 @@ function updateGlobalConfig(modelsObj: Record<string, unknown>) {
     return
   }
 
-  const raw = readFileSync(GLOBAL_CONFIG, "utf-8")
-  const jsonStr = stripJsonc(raw)
-
-  let config: any
+  let config: Record<string, unknown>
   try {
-    config = JSON.parse(jsonStr)
+    config = JSON.parse(stripJsonc(readFileSync(GLOBAL_CONFIG, "utf-8")))
   } catch {
-    console.error("  Failed to parse global config as JSON after stripping comments")
+    console.error("  Failed to parse global config after stripping comments")
     return
   }
 
-  if (!config.provider) config.provider = {}
-  if (!config.provider.commandcode) {
-    config.provider.commandcode = {
-      npm: "commandcode-go-opencode-provider",
-      name: "Command Code",
-      env: ["COMMANDCODE_API_KEY"],
-    }
+  const provider = (config.provider as Record<string, Record<string, unknown>>) ?? {}
+  const commandcode = provider.commandcode ?? {
+    npm: "commandcode-go-opencode-provider",
+    name: "Command Code",
+    env: ["COMMANDCODE_API_KEY"],
   }
-  config.provider.commandcode.models = modelsObj
+  commandcode.models = modelsObj
+  provider.commandcode = commandcode
+  config.provider = provider
 
-  const output = JSON.stringify(config, null, 2) + "\n"
-  writeFileSync(GLOBAL_CONFIG, output, "utf-8")
+  writeFileSync(GLOBAL_CONFIG, JSON.stringify(config, null, 2) + "\n", "utf-8")
   console.log(`  Updated ${GLOBAL_CONFIG}`)
 }
 
-async function main() {
+// --- Main -------------------------------------------------------------------
+
+export async function main() {
   const args = process.argv.slice(2)
   const shouldUpdateGlobal = args.includes("--update-global")
 
-  const { source, version } = await fetchLatestBundle()
+  const { source, modelsMd, version } = await fetchLatestBundle()
   console.log(`Read CLI bundle v${version} (${(source.length / 1024).toFixed(0)} KB)`)
 
-  console.log("Extracting provider enum (Wt)...")
-  const wt = extractWt(source)
-  const wtName = getWtVarName(source)
-  console.log(`  Provider enum var: ${wtName}, keys: ${Object.keys(wt).join(", ")}`)
+  console.log("Extracting model catalog and costs...")
+  const { catalog, costs } = extractCatalogAndCosts(source)
+  console.log(`  Found ${catalog.length} catalog models, ${costs.size} cost entries`)
 
-  console.log("Extracting spec constants...")
-  const spec = extractSpecConstants(source)
-  console.log(`  chatComplete=${spec.chatComplete}, responses=${spec.responses}, qt=${spec.qt || "(none)"}`)
+  const md = modelsMd ? parseModelsMd(modelsMd) : new Map<string, MdEntry>()
+  console.log(`  Parsed ${md.size} models from docs table`)
 
-  console.log("Extracting model catalog...")
-  const models = extractModelCatalog(source, wt, wtName, spec)
-  const modelCount = Object.keys(models).length
-  console.log(`  Found ${modelCount} models`)
-
-  console.log("Extracting cost data...")
-  const costs = extractCostData(source, wt, wtName)
-  const costMap = buildCostMap(costs)
-  console.log(`  Found ${costMap.size} cost entries`)
-
-  const entries: ModelEntry[] = []
-
-  for (const [, model] of Object.entries(models)) {
-    const entry = buildModelEntry(model, costMap)
-    if (entry) {
-      entries.push(entry)
-    } else {
-      console.warn(`  Skipping ${model.id}: no cost data`)
-    }
-  }
-
-  for (const extra of HARDCODED_EXTRAS) {
-    if (!entries.some((e) => e.id === extra.id)) {
-      const entry = buildModelEntry(extra, costMap)
-      if (entry) {
-        console.log(`  Adding hardcoded extra: ${extra.id}`)
-        entries.push(entry)
-      }
-    }
-  }
-
+  const entries = buildModelEntries(catalog, costs, md)
   entries.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier === "premium" ? -1 : 1
     return a.name.localeCompare(b.name)
   })
 
-  console.log(`\nWriting ${MODELS_JSON} with ${entries.length} models...`)
+  console.log(`Writing ${MODELS_JSON} with ${entries.length} models...`)
   writeFileSync(MODELS_JSON, JSON.stringify(entries, null, 2) + "\n", "utf-8")
 
-  const modelsObj = generateOpencodeModels(entries)
+  console.log(`Writing ${VERSION_TS} with version ${version}...`)
+  writeFileSync(
+    VERSION_TS,
+    `// Auto-generated by scripts/sync-models.ts — do not edit manually\nexport const COMMAND_CODE_VERSION = ${JSON.stringify(version)}\n`,
+    "utf-8",
+  )
 
   if (shouldUpdateGlobal) {
     console.log("Updating global config...")
-    updateGlobalConfig(modelsObj)
+    updateGlobalConfig(generateOpencodeModels(entries))
   }
 
-  console.log("\nModel list:")
+  const unpriced = entries.filter((e) => e.cost.input === 0 && e.cost.output === 0)
+  console.log(`\nModel list (${entries.length}):`)
   for (const entry of entries) {
     const cost = `$${entry.cost.input}/$${entry.cost.output}`
-    console.log(`  ${entry.tier.padEnd(12)} ${entry.id.padEnd(35)} ${entry.name.padEnd(25)} ${cost}`)
+    console.log(`  ${entry.tier.padEnd(12)} ${entry.id.padEnd(42)} ${entry.name.padEnd(32)} ${cost}`)
   }
-
+  if (unpriced.length > 0) {
+    console.log(`\nNote: ${unpriced.length} model(s) have no advertised price (shown as $0): ${unpriced.map((e) => e.id).join(", ")}`)
+  }
   if (!shouldUpdateGlobal) {
     console.log(`\nRun with --update-global to update ${GLOBAL_CONFIG}`)
   }
-
   console.log("\nDone.")
 }
 
-main()
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

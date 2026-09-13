@@ -9,10 +9,9 @@ import type {
 } from "@ai-sdk/provider"
 import { buildRequest } from "./convert.js"
 import { parseStreamEvents } from "./stream.js"
+import { COMMAND_CODE_VERSION } from "./version.js"
 
 const DEFAULT_BASE_URL = "https://api.commandcode.ai"
-// x-command-code-version must match the Command Code CLI version for API compatibility
-const CC_VERSION = "0.26.20"
 
 export interface CommandCodeModelOptions {
   apiKey: string
@@ -41,7 +40,7 @@ export class CommandCodeLanguageModel implements LanguageModelV3 {
     return {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.opts.apiKey}`,
-      "x-command-code-version": CC_VERSION,
+      "x-command-code-version": COMMAND_CODE_VERSION,
       "x-cli-environment": "production",
       "x-project-slug": "opencode",
       ...this.opts.headers,
