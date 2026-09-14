@@ -18,6 +18,8 @@ export interface ModelEntry {
   /** Reasoning efforts the model supports (e.g. ["low","medium","high"]). */
   reasoning_efforts?: string[]
   tool_call: boolean
+  /** True when the model accepts image input; drives opencode attachment gating. */
+  vision?: boolean
   cost: { input: number; output: number; cache_read?: number; cache_write?: number }
   limit: { context: number; output: number }
 }
@@ -49,11 +51,38 @@ export interface MdEntry {
   context?: number
   reasoning: boolean
   cost?: { input: number; output: number; cache_read?: number; cache_write?: number }
+  /** "Best for" column; may advertise vision/multimodal support. */
+  bestFor?: string
 }
 
 function tierFor(id: string): "premium" | "open-source" {
   if (id.startsWith("claude-") || id.startsWith("gpt-")) return "premium"
   return "open-source"
+}
+
+// Image-capable models. The Command Code docs advertise vision in the "Best for"
+// column for some entries; the rest are stable family-level capabilities that
+// were cross-checked against models.dev (the registry opencode uses).
+const VISION_ID_PATTERNS: RegExp[] = [
+  /^claude-/,
+  /^gpt-/,
+  /^google\/gemini-/,
+  /^meta\/muse-spark-/,
+  /^xai\/grok-/,
+  /^moonshotai\/Kimi-K[23]/,
+  /^MiniMaxAI\/MiniMax-M3/,
+  /^thinkingmachines\/inkling/,
+  /^Qwen\/Qwen3\.(6-Plus|7-Flash|7-Plus|8-)/,
+  /^sakana\/fugu-ultra/,
+  /^xiaomi\/mimo-v2\.5$/,
+  /^z-ai\/glm-5\.3-flash/,
+]
+
+const VISION_HINT_RE = /\b(?:vision|multimodal)/i
+
+export function isVisionModel(id: string, bestFor?: string): boolean {
+  if (VISION_ID_PATTERNS.some((pattern) => pattern.test(id))) return true
+  return typeof bestFor === "string" && VISION_HINT_RE.test(bestFor)
 }
 
 const FALLBACK_COSTS: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }> = {
@@ -110,7 +139,8 @@ export function parseModelsMd(md: string): Map<string, MdEntry> {
     const context = parseContextValue(cells[3] ?? "")
     const efforts = cells[4] ?? ""
     const cost = parseCostValue(cells[5] ?? "")
-    map.set(id, { id, name, context, reasoning: efforts !== "" && efforts !== "—", cost })
+    const bestFor = cells[7] ?? ""
+    map.set(id, { id, name, context, reasoning: efforts !== "" && efforts !== "—", cost, ...(bestFor ? { bestFor } : {}) })
   }
   return map
 }
@@ -287,6 +317,7 @@ export function buildModelEntries(
       reasoning,
       ...(model.reasoningEfforts?.length ? { reasoning_efforts: model.reasoningEfforts } : {}),
       tool_call: true,
+      ...(isVisionModel(model.id, mdEntry?.bestFor) ? { vision: true } : {}),
       cost,
       limit: { context, output: outputLimitFor(model.id) },
     })
@@ -314,6 +345,11 @@ export function generateOpencodeModels(entries: ModelEntry[]): Record<string, un
       name: entry.name,
       reasoning: entry.reasoning,
       tool_call: entry.tool_call,
+      attachment: entry.vision === true,
+      modalities: {
+        input: entry.vision === true ? ["text", "image"] : ["text"],
+        output: ["text"],
+      },
       cost: costObj,
       limit: entry.limit,
     }

@@ -11,6 +11,7 @@ interface ModelEntry {
   reasoning: boolean
   reasoning_efforts?: string[]
   tool_call: boolean
+  vision?: boolean
   cost: { input: number; output: number; cache_read?: number; cache_write?: number }
   limit: { context: number; output: number }
 }
@@ -54,6 +55,12 @@ export default async function commandcodePlugin() {
             name: entry.name,
             reasoning: entry.reasoning,
             tool_call: entry.tool_call,
+            // Capability metadata drives opencode/OpenChamber attachment gating.
+            attachment: entry.vision === true,
+            modalities: {
+              input: entry.vision === true ? ["text", "image"] : ["text"],
+              output: ["text"],
+            },
             cost: costObj,
             limit: entry.limit,
           }
