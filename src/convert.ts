@@ -1,5 +1,7 @@
 import type { LanguageModelV3CallOptions } from "@ai-sdk/provider"
 import type {
+  LanguageModelV3DataContent,
+  LanguageModelV3FilePart,
   LanguageModelV3FunctionTool,
   LanguageModelV3Message,
   LanguageModelV3TextPart,
@@ -9,8 +11,16 @@ import type {
   LanguageModelV3ToolResultOutput,
 } from "@ai-sdk/provider"
 
+type CCImagePart = {
+  type: "image"
+  image: string
+  mimeType: string
+}
+
+type CCUserContentPart = { type: "text"; text: string } | CCImagePart
+
 type CCMessage =
-  | { role: "user"; content: string | unknown[] }
+  | { role: "user"; content: string | CCUserContentPart[] }
   | { role: "assistant"; content: CCAssistantContent[] }
   | { role: "tool"; content: CCToolResultContent[] }
 
@@ -94,17 +104,29 @@ function isToolResultPart(p: unknown): p is LanguageModelV3ToolResultPart {
   return hasType(p, "tool-result")
 }
 
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    const textParts = content.filter(isTextPart) as LanguageModelV3TextPart[]
-    const nonTextParts = content.filter((p) => !isTextPart(p))
-    if (nonTextParts.length > 0 && textParts.length === 0) {
-      console.warn(`Command Code provider: dropped ${nonTextParts.length} non-text part(s) in user message`)
-    }
-    return textParts.map((p) => p.text).join("\n")
+function isFilePart(p: unknown): p is LanguageModelV3FilePart {
+  return hasType(p, "file")
+}
+
+function toBase64(data: LanguageModelV3DataContent): string | null {
+  if (typeof data === "string") {
+    const dataUrl = /^data:[^;,]+;base64,(.*)$/s.exec(data)
+    const base64 = (dataUrl ? dataUrl[1] ?? "" : data).replace(/\s/g, "")
+    return base64.length > 0 ? base64 : null
   }
-  return ""
+  if (data instanceof Uint8Array) {
+    return Buffer.from(data).toString("base64")
+  }
+  return null
+}
+
+// Image parts travel as data-URL content blocks on the wire; the Command Code
+// CLI serializes `{ type: "image", image: "data:<mime>;base64,<data>", mimeType }`.
+function toImagePart(part: LanguageModelV3FilePart): CCImagePart | null {
+  if (typeof part.mediaType !== "string" || !part.mediaType.startsWith("image/")) return null
+  const data = toBase64(part.data)
+  if (!data) return null
+  return { type: "image", image: `data:${part.mediaType};base64,${data}`, mimeType: part.mediaType }
 }
 
 function convertToolResultOutput(output: LanguageModelV3ToolResultOutput): CCToolResultContent["output"] {
@@ -129,8 +151,34 @@ function convertToolResultOutput(output: LanguageModelV3ToolResultOutput): CCToo
 function convertMessage(msg: LanguageModelV3Message): CCMessage | null {
   switch (msg.role) {
     case "user": {
-      const text = extractText(msg.content)
-      return { role: "user", content: text }
+      if (typeof msg.content === "string") {
+        return { role: "user", content: msg.content }
+      }
+      const textParts: string[] = []
+      const blocks: CCUserContentPart[] = []
+      let dropped = 0
+      for (const part of msg.content) {
+        if (isTextPart(part)) {
+          textParts.push(part.text)
+          blocks.push({ type: "text", text: part.text })
+        } else if (isFilePart(part)) {
+          const image = toImagePart(part)
+          if (image) blocks.push(image)
+          else dropped += 1
+        } else {
+          dropped += 1
+        }
+      }
+      if (blocks.some((part) => part.type === "image")) {
+        if (dropped > 0) {
+          console.warn(`Command Code provider: dropped ${dropped} unsupported part(s) in user message`)
+        }
+        return { role: "user", content: blocks }
+      }
+      if (dropped > 0 && textParts.length === 0) {
+        console.warn(`Command Code provider: dropped ${dropped} non-text part(s) in user message`)
+      }
+      return { role: "user", content: textParts.join("\n") }
     }
     case "assistant": {
       const parts: CCAssistantContent[] = []

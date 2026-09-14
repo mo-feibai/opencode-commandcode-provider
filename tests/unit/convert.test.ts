@@ -52,13 +52,45 @@ test("converts user message with array of text parts", () => {
   expect(req.params.messages[0]).toEqual({ role: "user", content: "line1\nline2" })
 })
 
-test("user message with non-text parts drops them silently", () => {
+test("converts user image file part into a base64 content block", () => {
+  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+  const req = buildRequest("m", makeOpts({
+    prompt: [{
+      role: "user",
+      content: [
+        { type: "text", text: "what is this?" },
+        { type: "file", mediaType: "image/png", data: bytes },
+      ],
+    }],
+  }))
+  expect(req.params.messages).toHaveLength(1)
+  const msg = req.params.messages[0] as { role: "user"; content: unknown[] }
+  expect(msg.content).toEqual([
+    { type: "text", text: "what is this?" },
+    { type: "image", image: `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`, mimeType: "image/png" },
+  ])
+})
+
+test("converts data URL image parts and strips whitespace", () => {
+  const req = buildRequest("m", makeOpts({
+    prompt: [{
+      role: "user",
+      content: [{ type: "file", mediaType: "image/jpeg", data: "data:image/jpeg;base64,QU JD" }],
+    }],
+  }))
+  const msg = req.params.messages[0] as { role: "user"; content: unknown[] }
+  expect(msg.content).toEqual([
+    { type: "image", image: "data:image/jpeg;base64,QUJD", mimeType: "image/jpeg" },
+  ])
+})
+
+test("user message with non-image parts drops them", () => {
   const req = buildRequest("m", makeOpts({
     prompt: [{
       role: "user",
       content: [
         { type: "text", text: "hello" },
-        { type: "image", url: "https://example.com/img.png" },
+        { type: "file", mediaType: "application/pdf", data: new Uint8Array([1, 2, 3]) },
       ],
     }],
   }))
